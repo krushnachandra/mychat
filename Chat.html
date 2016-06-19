@@ -1,0 +1,442 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.1/jquery.min.js"></script>
+    <link href="//netdna.bootstrapcdn.com/bootstrap/3.1.1/css/bootstrap.min.css" rel="stylesheet">
+    <script src="//netdna.bootstrapcdn.com/bootstrap/3.1.1/js/bootstrap.min.js"></script>
+    <script src="//cdn.pubnub.com/pubnub.min.js"></script>
+
+
+    </head>
+<body>
+   
+
+    <div class="container-fluid">
+        <div class="row">
+            <div class="col-md-12">
+                <nav class="navbar navbar-default" role="navigation">
+                    <div class="container-fluid">
+                        <div class="navbar-header">
+                            <a class="navbar-brand">MemeWarz!</a>
+                        </div>
+                        <div class="navbar-form navbar-left">
+                            <button type="submit" class="btn btn-default" id="find-match">Find Match</button>
+                        </div>
+                        <ul class="nav navbar-nav navbar-right">
+                            <li>
+                                <a href="#">
+                                    You are <strong id="whoami"></strong>
+                                    <span id="my_skill" class="badge"></span>
+                                </a>
+                            </li>
+                        </ul>
+                    </div>
+                </nav>
+            </div>
+        </div>
+        <div class="row">
+            <div class="col-md-6">
+                <div class="panel panel-default">
+                    <div class="panel-heading">Online Users</div>
+                    <div class="list-group" id="online-users"></div>
+                </div>
+            </div>
+            <div class="col-md-6">
+                <div class="panel panel-default">
+                    <div class="panel-heading">Lobby Chat</div>
+                    <ul class="list-group" id="chat-output"></ul>
+                    <div class="panel-body">
+                        <form id="chat">
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="chat-input" />
+                                <span class="input-group-btn">
+                                    <button type="submit" class="btn btn-default">Send Message</button>
+                                </span>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+            </div>
+        </div>
+        </div>
+
+    <script>
+        var pubnub = null;
+        var me = null;
+        var Users = null;
+
+        var channel = 'memewarz-lobby-demo-21';
+
+        var $online_users = $('#online-users');
+        var $input = $('#chat-input');
+        var $output = $('#chat-output');
+
+        var randomName = function () {
+
+            var animals = ['pigeon', 'seagull', 'bat', 'owl', 'sparrows', 'robin', 'bluebird', 'cardinal', 'hawk', 'fish', 'shrimp', 'frog', 'whale', 'shark', 'eel', 'seal', 'lobster', 'octopus', 'mole', 'shrew', 'rabbit', 'chipmunk', 'armadillo', 'dog', 'cat', 'lynx', 'mouse', 'lion', 'moose', 'horse', 'deer', 'raccoon', 'zebra', 'goat', 'cow', 'pig', 'tiger', 'wolf', 'pony', 'antelope', 'buffalo', 'camel', 'donkey', 'elk', 'fox', 'monkey', 'gazelle', 'impala', 'jaguar', 'leopard', 'lemur', 'yak', 'elephant', 'giraffe', 'hippopotamus', 'rhinoceros', 'grizzlybear'];
+
+            var colors = ['silver', 'gray', 'black', 'red', 'maroon', 'olive', 'lime', 'green', 'teal', 'blue', 'navy', 'fuchsia', 'purple'];
+
+            return colors[Math.floor(Math.random() * colors.length)] + '_' + animals[Math.floor(Math.random() * animals.length)];
+
+        };
+
+        var randomSkill = function () {
+            return Math.floor(Math.random() * 3) + 1;
+        };
+
+        var User_factory = function () {
+
+            var user_list = {};
+            var self = this;
+
+            self.remove = function (uuid) {
+                delete user_list[uuid];
+            };
+
+            self.get = function (uuid) {
+                if (user_list.hasOwnProperty(uuid)) {
+                    return user_list[uuid];
+                } else {
+                    console.error('Trying to retrieve user that is not present.');
+                }
+            };
+
+            self.set = function (uuid, data) {
+                if (!user_list.hasOwnProperty(uuid)) {
+                    user_list[uuid] = new User(uuid, data);
+                }
+                return user_list[uuid];
+            };
+
+            self.all = function () {
+                return user_list;
+            }
+
+        };
+
+        var User = function (uuid, state) {
+
+            var self = this;
+
+            self.uuid = uuid || randomName();
+            self.state = state || { skill: randomSkill() };
+
+            var $tpl = $('\
+    <li id="' + self.uuid + '" class="list-group-item"> \
+    <span class="badge">' + self.state.skill + '</span> \
+    ' + self.uuid + ' \
+    </li>');
+
+            self.chat = function (text, $target) {
+
+                var $line = $('<li class="list-group-item"><strong>' + self.uuid + ':</strong> </span>');
+                var $message = $('<span class="text" />').text(text).html();
+
+                $line.append($message);
+                $target.append($line);
+
+                $target.scrollTop($target[0].scrollHeight);
+
+            };
+
+            self.leave = function () {
+                $tpl.remove();
+            };
+
+            self.init = function () {
+
+                $tpl.click(function () {
+                    me.private_chat(self);
+                    return false;
+                });
+
+                $('#online-users').append($tpl);
+
+            };
+
+            return self;
+
+        };
+
+        var Client = function () {
+
+            var self = new User(randomName());
+
+            self.on_request = function (caller) {
+
+                var response = confirm(caller.uuid + ' is challenging you to a match! Press OK to accept or Cancel to deny.');
+
+                pubnub.publish({
+                    channel: channel,
+                    message: {
+                        type: 'challenge',
+                        payload: {
+                            action: 'response',
+                            accepted: response,
+                            uuid: self.uuid,
+                            target: caller.uuid
+                        }
+                    },
+                    callback: function () {
+                        alert('Your response has been sent.');
+                    }
+                });
+            };
+
+            self.on_response = function (caller, accepted) {
+                if (accepted) {
+                    alert(caller.uuid + ' has accepted your challenge!');
+                } else {
+                    alert(caller.uuid + ' has rejected your challenge!');
+                }
+            };
+
+            self.private_chat = function (target) {
+
+                // open a modal for ourselves
+                var new_chat = new PrivateChat(target);
+
+                // tell the other user to open the modal too
+                pubnub.publish({
+                    channel: channel,
+                    message: {
+                        type: 'new-private-chat',
+                        payload: {
+                            uuid: self.uuid,
+                            target: target.uuid
+                        }
+                    }
+                });
+
+            };
+
+            Users.set(self.uuid, self.state);
+
+            return self;
+
+        };
+
+        var PrivateChat = function (user) {
+
+            var self = this;
+
+            var $tpl = $('\
+    <div class="modal fade"> \
+      <div class="modal-dialog"> \
+        <div class="modal-content"> \
+          <div class="modal-header"> \
+            <button type="button" class="close" data-dismiss="modal">&times;</button> \
+            <h4 class="modal-title">' + user.uuid + ' <span class="badge">' + user.state.skill + '</span></h4> \
+          </div> \
+          <div class="modal-body"> \
+            <div class="panel panel-default"> \
+              <div class="panel-heading">Private Chat</div> \
+              <ul class="list-group private-chat-output"></ul> \
+              <div class="panel-body"> \
+                <form class="private-chat"> \
+                  <div class="input-group"> \
+                    <input type="text" class="form-control private-chat-input" /> \
+                    <span class="input-group-btn"> \
+                      <button type="submit" class="btn btn-default">Send Message</button> \
+                    </span> \
+                  </div> \
+                </form> \
+              </div> \
+            </div> \
+          </div> \
+          <div class="modal-footer"> \
+            <button type="button" class="btn btn-default" data-dismiss="modal">Close</button> \
+            <button type="button" class="challenge-user btn btn-primary">Challenge</button> \
+          </div> \
+        </div> \
+      </div> \
+    </div>');
+
+            var $chat_form = $tpl.find('.private-chat');
+            var $output = $tpl.find('.private-chat-output');
+            var $input = $tpl.find('.private-chat-input');
+            var $challenge = $tpl.find('.challenge-user');
+
+            private_channel = channel + ':' + [me.uuid, user.uuid].sort().join(':');
+
+            self.hide = function (callback) {
+                $tpl.on('shown.bs.modal', callback);
+                $tpl.modal('hide');
+            };
+
+            self.show = function (callback) {
+                $tpl.on('hidden.bs.modal', callback);
+                $tpl.modal('show');
+            };
+
+            var init = function (callback) {
+
+                $('body').append($tpl);
+
+                pubnub.subscribe({
+                    channel: private_channel,
+                    message: function (data) {
+                        Users.get(data.payload.uuid).chat(data.payload.text, $output);
+
+                    }
+                });
+
+                $chat_form.submit(function () {
+
+                    console.log($input);
+
+                    pubnub.publish({
+                        channel: private_channel,
+                        message: {
+                            type: 'private-chat',
+                            payload: {
+                                text: $input.val(),
+                                uuid: me.uuid
+                            }
+                        }
+                    });
+
+                    $input.val('');
+
+                    return false;
+
+                });
+
+                $challenge.click(function () {
+
+                    pubnub.publish({
+                        channel: channel,
+                        message: {
+                            type: 'challenge',
+                            payload: {
+                                action: 'request',
+                                uuid: me.uuid,
+                                target: user.uuid
+                            }
+                        }
+                    });
+
+                    alert('Challenging ' + user.uuid + '...');
+
+                });
+
+                self.show();
+
+            };
+
+            init();
+
+            return self;
+
+        };
+
+        var App = function () {
+
+            Users = new User_factory();
+            me = new Client();
+
+            pubnub = PUBNUB.init({
+                publish_key: 'pub-c-36b5b922-6104-479c-ba0f-23c52a96dca1',
+                subscribe_key: 'sub-c-f582e672-345d-11e6-991f-02ee2ddab7fe',
+                uuid: me.uuid
+            });
+
+            pubnub.subscribe({
+                channel: channel,
+                state: me.state,
+                message: function (data) {
+
+                    if (data.type == 'chat') {
+                        Users.get(data.payload.uuid).chat(data.payload.text, $output);
+                    }
+
+                    if (data.payload.target == me.uuid) {
+
+                        if (data.type == 'new-private-chat') {
+
+                            new PrivateChat(Users.get(data.payload.uuid));
+
+                        }
+
+                        if (data.type == 'challenge') {
+
+                            var challenger = Users.get(data.payload.uuid);
+
+                            if (data.payload.action == 'request') {
+                                me.on_request(challenger);
+                            }
+
+                            if (data.payload.action == 'response') {
+                                me.on_response(challenger, data.payload.accepted);
+                            }
+
+                        }
+
+                    }
+
+                },
+                presence: function (data) {
+
+                    console.log(data);
+
+                    if (data.action == "join") {
+                        Users.set(data.uuid, data.state).init();
+                    }
+
+                    if (data.action == "leave" || data.action == "timeout") {
+                        Users.remove(data.uuid);
+                    }
+
+                }
+            });
+
+            $('#find-match').click(function () {
+
+                var matches = [];
+                var users = Users.all();
+
+                for (var uuid in users) {
+                    if (uuid !== me.uuid && users[uuid].state.skill == me.state.skill) {
+                        matches.push(users[uuid]);
+                    }
+                }
+
+                if (!matches.length) {
+                    alert('Nobody is online with the same skill level.');
+                } else {
+                    var opponent = matches[Math.floor(Math.random() * matches.length)];
+                    alert('Opponent Found: ' + opponent.uuid + ' with skill level ' + opponent.state.skill);
+                }
+
+            });
+
+            $('#chat').submit(function () {
+
+                pubnub.publish({
+                    channel: channel,
+                    message: {
+                        type: 'chat',
+                        payload: {
+                            text: $input.val(),
+                            uuid: me.uuid
+                        }
+                    }
+                });
+
+                $input.val('');
+
+                return false;
+
+            });
+
+            $('#whoami').text(me.uuid);
+            $('#my_skill').text(me.state.skill);
+
+        };
+
+        App();
+    </script>
+</body>
+</html>
+
